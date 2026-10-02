@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- 打开文档生成 = 让悬空 cref / 非法 XML 注释变成可见的 CS1570/CS1574；
+         CS1591（公共成员缺注释）不属于本库判据，显式豁免。 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>1591</NoWarn>
+    <RootNamespace>ColorMatrix</RootNamespace>
+    <AssemblyName>ColorMatrix</AssemblyName>
+  </PropertyGroup>
+</Project>

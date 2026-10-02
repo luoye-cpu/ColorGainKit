@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>GainMapKit</RootNamespace>
+    <AssemblyName>GainMapKit</AssemblyName>
+    <!-- 打开文档生成，好让悬空的 <see cref> 变成可见的 CS1574；
+         CS1591（公共成员缺注释）不属于本库的判据，显式关掉。 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>1591</NoWarn>
+  </PropertyGroup>
+
+</Project>

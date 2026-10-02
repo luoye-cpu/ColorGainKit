@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net11.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AssemblyName>GainMapKit.SelfTest</AssemblyName>
+    <RootNamespace>GainMapKit.SelfTest</RootNamespace>
+    <NoWarn>1591</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\GainMapKit\GainMapKit.csproj" />
+  </ItemGroup>
+
+  <!-- 夹具随仓：自检按文件名取，不做「目录里第一个」的猜测 -->
+  <ItemGroup>
+    <None Include="..\..\fixtures\*" Link="fixtures\%(Filename)%(Extension)"
+          CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+</Project>
