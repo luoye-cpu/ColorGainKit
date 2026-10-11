@@ -1,4 +1,4 @@
-using ColorMatrix;    // ColorSpaceRegistry 与其余内核类型均在此命名空间
+﻿using ColorMatrix;    // ColorSpaceRegistry 与其余内核类型均在此命名空间
 
 // ══════════════════════════════════════════════════════════════════════════════
 //  ColorMatrix 自检 —— 零依赖（不引 xunit / NUnit，只跑断言并回退出码）。
@@ -230,5 +230,80 @@ if (TransferCurve.ForCicpTransfer("18") is { } hlg)
 }
 
 Console.WriteLine();
+
+// ══════════════════════════════════════════════════════════════════════════════
+//  同步自 ffmpegPictureUI 2026-10-11 的四把锁（F-2 / F-1 / F-10 / F-4 的回归哨兵）
+//  口径：全部带**外部锚或反控**，不允许"不为 null"式恒真。
+// ══════════════════════════════════════════════════════════════════════════════
+
+// ── L-2（F-2 锥矩阵）：smpte431→bt709 必须逐元素贴 zimg/lcms 一致值 ──
+//    期望值来源：ffmpegPictureUI tests/ServiceProbe colormath 的 zimg 实测表（外部参照，非本库自述）。
+//    末项若被改回转写错的 1.0633，本条 maxErr 立刻升到 2.36e-4（>1e-5）⇒ 有牙。
+{
+    var expect431 = new[] { 1.15752, -0.15496, -0.00255, -0.04150, 1.04557, -0.00407, -0.01805, -0.07858, 1.09663 };
+    var got431 = ColorSpaceRegistry.LinearMatrixBetweenPrimaries("smpte431", "bt709");
+    if (got431 is { Length: 9 })
+    {
+        double e431 = 0; for (int i = 0; i < 9; i++) e431 = System.Math.Max(e431, System.Math.Abs(got431[i] - expect431[i]));
+        Check(e431 <= 1e-5, $"L-2 smpte431→bt709 与外部锚逐元素一致（maxErr={e431:E2}，容差 1e-5；末项转写错时为 2.36E-004）");
+    }
+    else Check(false, "L-2 smpte431→bt709 必须返回矩阵（跨白点⇒含色适应）");
+}
+
+// ── L-1（F-1 表快路径 vs 解析式，逐算子等值）──
+//    快路径漏掉只在解析分支执行的算子 ⇒ 同一 spec 两副面孔（实测白场被推到 PQ 满量程、差 49×）。
+foreach (var (nameF1, mk) in new (string, System.Action<TransformSpec>)[]
+{
+    ("EncodeScale≠1（SDR→PQ 目标）", sp => { sp.EncodeScale = TransferCurve.SdrWhiteNits / TransferCurve.PqPeakNits; }),
+    ("DstIsHlgScene（SDR→HLG 目标）", sp => { sp.DstIsHlgScene = true; sp.DstHlgSystemGamma = 1.2; sp.EncodeScale = TransferCurve.SdrWhiteNits / 1000.0; }),
+})
+{
+    const int nF1 = 2048;
+    var srcF1 = new byte[nF1 * 6];
+    for (int i = 0; i < nF1; i++)
+    {
+        ushort v = (ushort)(i * 65535 / (nF1 - 1));
+        for (int c = 0; c < 3; c++) { srcF1[i * 6 + c * 2] = (byte)(v & 0xFF); srcF1[i * 6 + c * 2 + 1] = (byte)(v >> 8); }
+    }
+    var specF1 = new TransformSpec
+    {
+        SrcCurve = TransferCurve.Srgb, DstCurve = TransferCurve.Pq,
+        ClampLinearBeforeEncode = true, Matrix = null, LinearScale = 1.0,
+    };
+    mk(specF1);
+    var tS = ColorKernels.BuildTables(specF1.SrcCurve);
+    var tD = ColorKernels.BuildTables(specF1.DstCurve);
+    var withT = new byte[nF1 * 6]; var noT = new byte[nF1 * 6];
+    ColorKernels.TransformRgb48le(srcF1, withT, specF1, nF1, tS, tD);
+    ColorKernels.TransformRgb48le(srcF1, noT, specF1, nF1, null, null);
+    long maxF1 = 0; int firstF1 = -1;
+    for (int i = 0; i + 1 < withT.Length; i += 2)
+    {
+        int d = System.Math.Abs((withT[i] | (withT[i + 1] << 8)) - (noT[i] | (noT[i + 1] << 8)));
+        if (d > maxF1) maxF1 = d;
+        if (d != 0 && firstF1 < 0) firstF1 = i / 2;
+    }
+    Check(firstF1 < 0 && maxF1 == 0,
+          $"L-1 {nameF1}：算子激活时送表与不送表必须逐字节相同（首个不同={(firstF1 < 0 ? "无" : firstF1.ToString())} 最大差={maxF1}）");
+}
+
+// ── L-10（F-10 BT.601-7 定义式）──
+{
+    var b6 = TransferCurve.Bt601;
+    Check(System.Math.Abs(b6.G - 1.0 / 0.45) < 1e-12 && System.Math.Abs(b6.C - 1.0 / 4.5) < 1e-12,
+          $"L-10 Bt601 必须是分段 0.45 式（γ={b6.G}、1/C={1.0 / b6.C}）；挂成纯幂 γ2.2 就红");
+    Check(System.Math.Abs(b6.D / 4.5 - 0.0180539685108078) < 2e-6,
+          $"L-10 编码域拐点 D={b6.D} ⇒ 线性域 {b6.D / 4.5:0.0000000000} 须贴 DNG SDK 的 β=0.0180539685108078");
+    Check(b6.CicpToken == "smpte170m", $"L-10 CICP 名必须是 smpte170m（实 {b6.CicpToken ?? "null"}）⇒ 不许写成 bt709 洗掉源语义");
+    // ⚠ 操作数纠正（与 ffmpegPictureUI 同一课）：ExactTransferName 吃的是**友好空间名**
+    //   （"BT.2100 PQ" 这种），拿 trc token "smpte170m" 去叫它必然 null ⇒ 那不是缺陷，是问错了对象。
+    //   命名可达性由 CICP 码正查承担；"170M 源端到端 -color_trc 读回"仍属未判定（需 e2e 判据）。
+    var viaCode6 = TransferCurve.ForCicpTransfer("6");
+    Check(viaCode6 != null && viaCode6.Value.CicpToken == "smpte170m",
+          $"L-10 CICP 码 6 必须解析到 170M 曲线且名不回退（实 {viaCode6?.CicpToken ?? "null"}）");
+    Console.WriteLine("  L-10 未判定：170M 源产物 -color_trc 的端到端读回（本库无 e2e 面 ⇒ 归宿主仓的 wiring 判据）");
+    Check(ColorSpaceRegistry.ExactTransferName("Adobe RGB") == "bt470m",
+          "L-10 反控：Adobe RGB 仍属 γ2.2 一族，不许被 170M 的改动带跑");
+}
 Console.WriteLine($"===== ColorMatrix SelfTest: {pass} PASS / {fail} FAIL =====");
 return fail == 0 ? 0 : 1;

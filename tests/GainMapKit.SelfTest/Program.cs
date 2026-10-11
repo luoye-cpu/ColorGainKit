@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using GainMapKit;
@@ -371,6 +371,43 @@ var fast2 = IsoBmffGainMapProbe.HasTmapItemFast(Path.Combine(FixDir, "ref_libavi
 CK("HasTmapItemFast：有增益图片 ⇒ true", fast2 == true, $"实 {fast2?.ToString() ?? "null"}");
 var fast3 = IsoBmffGainMapProbe.HasTmapItemFast(Path.Combine(FixDir, "ref_ultrahdr_golden.jpg"));
 CK("HasTmapItemFast：JPEG（非 BMFF）⇒ false 且不抛", fast3 == false, $"实 {fast3?.ToString() ?? "null"}");
+
+// ── L-4（F-4 探针三态：「不知道」≠「没有」）同步自 ffmpegPictureUI 2026-10-11 ──
+//    写在这里而不是文件尾：本文件的汇总行与 `return` 之后属不可达区，追加在那儿=写了不执行。
+{
+    static byte[] BoxL4(string type, byte[] payload)
+    {
+        var b = new byte[8 + payload.Length];
+        int sz = b.Length;
+        b[0] = (byte)(sz >> 24); b[1] = (byte)(sz >> 16); b[2] = (byte)(sz >> 8); b[3] = (byte)sz;
+        System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4);
+        payload.CopyTo(b, 8);
+        return b;
+    }
+    static byte[] LieL4(string type, int lieSize)
+    {
+        var b = new byte[12];
+        b[0] = (byte)(lieSize >> 24); b[1] = (byte)(lieSize >> 16); b[2] = (byte)(lieSize >> 8); b[3] = (byte)lieSize;
+        System.Text.Encoding.ASCII.GetBytes(type).CopyTo(b, 4);
+        return b;
+    }
+    var ftypL4 = BoxL4("ftyp", new byte[] { (byte)'a', (byte)'v', (byte)'i', (byte)'f', 0, 0, 0, 0, (byte)'a', (byte)'v', (byte)'i', (byte)'f' });
+    var a1 = IsoBmffGainMapProbe.Probe(ftypL4);
+    CK("L-4 只有 ftyp 的干净件必须判「确定·无」（反控：不许一律报不知道）", a1.Determinate && !a1.HasGainMap,
+       $"det={a1.Determinate} has={a1.HasGainMap}");
+    var t1 = new byte[ftypL4.Length + 12]; ftypL4.CopyTo(t1, 0); LieL4("meta", 4000).CopyTo(t1, ftypL4.Length);
+    var a2 = IsoBmffGainMapProbe.Probe(t1);
+    CK("L-4 顶层截断必须报「不知道 + 原因」，绝不返回「确定无」",
+       !a2.Determinate && !string.IsNullOrWhiteSpace(a2.FailReason),
+       $"det={a2.Determinate} has={a2.HasGainMap} reason={a2.FailReason ?? "-"}");
+    var mb = new byte[4 + 12]; LieL4("iloc", 3000).CopyTo(mb, 4);
+    var metaL4 = BoxL4("meta", mb); var t2 = new byte[ftypL4.Length + metaL4.Length];
+    ftypL4.CopyTo(t2, 0); metaL4.CopyTo(t2, ftypL4.Length);
+    var a3 = IsoBmffGainMapProbe.Probe(t2);
+    CK("L-4 meta 子 box 链断裂必须「不知道」且原因点名 meta",
+       !a3.Determinate && (a3.FailReason ?? "").Contains("meta"),
+       $"det={a3.Determinate} reason={a3.FailReason ?? "-"}");
+}
 
 Console.WriteLine();
 Console.WriteLine($"===== GainMapKit SelfTest: {pass} PASS / {fail} FAIL =====");

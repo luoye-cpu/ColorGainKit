@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Numerics;
 using System.Runtime.InteropServices;
 
@@ -514,8 +514,15 @@ public static class ColorKernels
             gm = new GamutMapParams(y[0], y[1], y[2], spec.GamutMapPreserveSaturation);
             gamut = gm.IsValid;
         }
+        //   表快路径只有「查表 + 矩阵」⇒ 这两个算子一旦激活必须关掉快路径，否则被整段静默跳过。
+        //   （同步自 ffmpegPictureUI F-1，2026-10-11：漏掉时 SDR→PQ 的白场被编码成 65535 满量程，
+        //     与不建表那臂差 49×；回归锁见 ColorMatrix.SelfTest 的 C20 段。）
+        double encScale = spec.EncodeScale;
+        bool encScaleOn = Math.Abs(encScale - 1.0) > 1e-12;
+        bool dstHlg = spec.DstIsHlgScene;
+        double dstHlgPeak = dstHlg ? NitsOfGamma(spec.DstHlgSystemGamma) : 0;
         bool fast = eotf != null && oetf != null && Math.Abs(scale - 1.0) < 1e-12 && !toneOn
-                    && !spec.SrcIsHlgScene && !gamut;
+                    && !spec.SrcIsHlgScene && !gamut && !encScaleOn && !dstHlg;
         bool clamp = spec.ClampLinearBeforeEncode;
 
         if (fast)
@@ -547,12 +554,8 @@ public static class ColorKernels
         //   （输出随 s^γ 变化）⇒ 先乘 scale 会把 L_W 的语义搞错。
         bool srcHlg = spec.SrcIsHlgScene;
         double srcHlgPeak = srcHlg ? NitsOfGamma(spec.SrcHlgSystemGamma) : 0;
-        // 编码侧（与解码侧对称）：目标域换算 + HLG 目标的逆向 OOTF。旧实现在 48-bit 主循环里
-        // **两者都缺** ⇒ 目标为 PQ/HLG 时产出错曝光（过曝 49× / 差 10×）。
-        double encScale = spec.EncodeScale;
-        bool encScaleOn = Math.Abs(encScale - 1.0) > 1e-12;
-        bool dstHlg = spec.DstIsHlgScene;
-        double dstHlgPeak = dstHlg ? NitsOfGamma(spec.DstHlgSystemGamma) : 0;
+        // 编码侧（与解码侧对称）：目标域换算 + HLG 目标的逆向 OOTF（旧实现在 48-bit 主循环里两者都缺）。
+        // ⚠ 这两个算子只在**解析分支**里执行、声明上提到此供 `fast` 判据复用。
 
         for (int i = 0; i < pixelCount; i++)
         {

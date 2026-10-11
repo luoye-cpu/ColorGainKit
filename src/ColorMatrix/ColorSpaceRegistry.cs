@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace ColorMatrix
@@ -357,6 +357,7 @@ namespace ColorMatrix
             {
                 "iec61966-2-1" or "srgb" => "iec61966-2-1",
                 "bt709" or "709" or "bt2020-10" or "bt2020-12" => "bt709",
+                "smpte170m" or "bt601" => "smpte170m",   // BT.601-7 定义式可精确表达 ⇒ 不许落 null（落 null 会滑向"带 ICC/告警"）
                 "gamma2.2" or "bt470m" or "adobe" => "bt470m",      // Adobe RGB (1998) = BT.470-6 M 制 gamma2.2
                 "smpte2084" or "pq" => "smpte2084",
                 "arib-std-b67" or "hlg" => "arib-std-b67",
@@ -777,7 +778,11 @@ namespace ColorMatrix
         /// </summary>
         internal static double[] BradfordAdapt(double[] srcW, double[] dstW)
         {
-            var M = new[] { 0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0633 };
+            // Bradford 锥响应矩阵。逐元素取 lcms2 `cmswtpnt.c`（BRADFORD）、skcms、libjxl 三处一致值，
+            // 并满足"每行之和≈1"自证不变量（第三行 0.0389−0.0685+1.0296=0.99999）。
+            // ⚠ 此前末项被转写成 1.0633（其余 8 个元素与 lcms 逐字相同）⇒ 跨白点适应整体带偏 ~2e-4。
+            //   同步自 ffmpegPictureUI F-2（2026-10-11）；回归锁见 ColorMatrix.SelfTest。
+            var M = new[] { 0.8951, 0.2664, -0.1614, -0.7502, 1.7135, 0.0367, 0.0389, -0.0685, 1.0296 };
             var coneS = MatVec(M, srcW);
             var coneD = MatVec(M, dstW);
             var L = new[] { coneD[0] / coneS[0], 0, 0, 0, coneD[1] / coneS[1], 0, 0, 0, coneD[2] / coneS[2] };

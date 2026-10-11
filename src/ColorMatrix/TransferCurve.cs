@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 
 namespace ColorMatrix;
 
@@ -109,6 +109,19 @@ public readonly struct TransferCurve
     /// </summary>
     public static readonly TransferCurve Bt709 = new(CurveKind.Parametric,
         1.0 / 0.45, 1.0 / 1.099, 0.099 / 1.099, 1.0 / 4.5, 0.08125, 0.0, 0.0, "bt709", "BT.709");
+
+    /// <summary>
+    /// BT.601-7 / SMPTE 170M（H.273 code 13 = "smpte170m (including BT.601)"）的传递函数：
+    /// **与 <see cref="Bt709"/> 同一条分段式**（γ=0.45、α=1.099、趾段斜率 4.5、编码域拐点 d=0.08125）。
+    /// 一手常数本机锚：tools/src/dng_sdk/.../dng_color_space.h:134-140
+    ///   fAlpha=1.0992968268094429  fBeta=0.0180539685108078  fSlope=4.5  fGamma=0.45
+    ///   ⇒ d/4.5 = 0.0180555556 与 β 同量（差 0.47 LSB@16bit）。
+    /// ⚠ 本库此前把 170M 挂成纯幂 γ2.2（与定义式最大差 4.20% 满量程）；zimg 的 t=smpte170m 又是纯 γ2.4
+    ///   —— 两者都不是定义式。刻意独立成实例（不复用 Bt709）：曲线同、CICP 语义不同。
+    /// 同步自 ffmpegPictureUI F-10（2026-10-11，维护者按 BT 系列定的 (a) 方案）。
+    /// </summary>
+    public static readonly TransferCurve Bt601 = new(CurveKind.Parametric,
+        1.0 / 0.45, 1.0 / 1.099, 0.099 / 1.099, 1.0 / 4.5, 0.08125, 0.0, 0.0, "smpte170m", "BT.601/170M");
 
     /// <summary>
     /// BT.709 的 **zimg 实现形态**：纯幂 γ(1/2.4)（无 α、无线性趾）。
@@ -388,7 +401,7 @@ public readonly struct TransferCurve
             "bt709" or "709" or "1" or "bt2020-10" or "bt2020-12" or "14" or "15" => Bt709,
             "bt470m" or "gamma22" or "4" => Gamma22,
             "bt470bg" or "gamma28" or "5" or "bt601-6-625" => Gamma28,
-            "smpte170m" or "6" => Gamma22,          // BT.601-525/170M 与 2.2 同族（业界按 gamma2.2 处理）
+            "smpte170m" or "6" or "bt601" => Bt601,   // BT.601-7 = 分段 0.45 式（不是纯 γ2.2，也不是 zimg 的 γ2.4）
             "smpte240m" or "7" => Smpte240M,
             "linear" or "8" => Linear,
             "smpte2084" or "pq" or "16" => Pq,
