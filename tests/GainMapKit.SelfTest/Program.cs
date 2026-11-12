@@ -152,12 +152,32 @@ CK("libavif 件 → avifdec：alternateHdrHeadroom 0.00（log2，即 1×）",
    gm1 != null && NearRel(gm1.HdrCapacityMax, 0.0, 1e-3), $"实 {Fmt(gm1?.HdrCapacityMax ?? -999)}");
 CK("libavif 件：载荷首字节 = version 0", (p1.TmapPayload?[0] ?? 0xFF) == 0);
 
-// 能力边界（实测，不作「通过」宣传）：grid 型增益图项本库**不定案**
+// grid 承载（2026-11-13 起本库**支持**，此前这条位置断言的是「不定案」）：
+//   `dimg tmap → [底图, grid]`、`dimg grid → 瓦片…`，瓦片是独立 codec item，尺寸取自各自 ispe。
+// 期望值 = 本夹具实测，且与宿主（权威副本）解析器逐字段相同 —— 宿主 ServiceProbe `cgkparity`
+// 每次都把这 8 个 grid 字段放进 15 个「件 × 截断变体」的对撞面里，两侧不等即红。
 var p2 = IsoBmffGainMapProbe.Probe(solo);
-CK("边界如实：grid 型增益图 ⇒ Determinate=false 且点名原因（而非谎报「无增益图」）",
-   p2.Determinate == false && p2.HasGainMap && (p2.FailReason ?? "").Contains("dimg"),
-   $"det={p2.Determinate} has={p2.HasGainMap} reason={p2.FailReason ?? "-"} gmItem={p2.GainMapItemId}");
-CK("边界如实：即便不定案，tmap 载荷仍取得出（元数据不丢）",
+CK("grid 件：定案且报出 tmap 形式（换掉了旧的「不支持 ⇒ Determinate=false」口径）",
+   p2.IsIsoBmff && p2.Determinate && p2.HasGainMap && p2.Form == "tmap",
+   $"iso={p2.IsIsoBmff} det={p2.Determinate} has={p2.HasGainMap} form={p2.Form} reason={p2.FailReason ?? "-"}");
+CK("grid 件：走分块承载（GainMapIsGrid），且单块流通道 GainMapItemData 必须为 null",
+   p2.GainMapIsGrid && p2.GainMapItemData == null,
+   $"isGrid={p2.GainMapIsGrid} itemData={p2.GainMapItemData?.Length ?? -1} B");
+CK("grid 件：网格 2×2、整幅 128×160、单块 64×80（本夹具实测）",
+   p2.GridRows == 2 && p2.GridCols == 2 && p2.GridWidth == 128 && p2.GridHeight == 160 &&
+   p2.TileWidth == 64 && p2.TileHeight == 80,
+   $"rows={p2.GridRows} cols={p2.GridCols} gw={p2.GridWidth} gh={p2.GridHeight} tw={p2.TileWidth} th={p2.TileHeight}");
+CK("grid 件：瓦片数 = 行×列，且每块都非空（顺序 = raster 顺序）",
+   p2.GainMapTiles != null && p2.GainMapTiles.Count == p2.GridRows * p2.GridCols &&
+   p2.GainMapTiles.All(t => t.Length > 0),
+   $"tiles={(p2.GainMapTiles?.Count ?? -1)} 期望={p2.GridRows * p2.GridCols} 各块=[{string.Join(",", (p2.GainMapTiles ?? new()).Select(t => t.Length))}]");
+CK("grid 件：整幅尺寸与「列×块宽 / 行×块高」自洽（载荷未声明裁切时的口径）",
+   p2.GridWidth == p2.GridCols * p2.TileWidth && p2.GridHeight == p2.GridRows * p2.TileHeight,
+   $"{p2.GridWidth}x{p2.GridHeight} vs {p2.GridCols}x{p2.TileWidth}×{p2.GridRows}x{p2.TileHeight}");
+CK("grid 件：瓦片编码识别为 av01 ⇒ ffmpeg 走 -f obu",
+   p2.GainMapCodec == "av01" && p2.GainMapFfmpegFormat == "obu",
+   $"codec={p2.GainMapCodec} ff={p2.GainMapFfmpegFormat}");
+CK("边界如实：即便走分块承载，tmap 载荷仍取得出（元数据不丢）",
    p2.TmapPayload?.Length == 142, $"实 {p2.TmapPayload?.Length ?? -1}");
 
 // 负控：没有增益图的真实 AVIF ⇒ 必须判「无」
