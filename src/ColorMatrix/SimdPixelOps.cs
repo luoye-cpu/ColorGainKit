@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 
@@ -215,30 +215,73 @@ namespace ColorMatrix
         // ═══════════════════════════════════════════════════
 
         /// <summary>
-        /// 灰度增益图计算：输入 HDR/SDR RGBA 交错，输出 每像素 1 byte。
-        /// 语义与 GainMapEncoder.ComputeGainMap 灰度分支一致（误差 &lt; 1 LSB）。
+        /// ISO 21496-1 的 baseOffset / alternateOffset（= 分母侧 / 分子侧），本库取 1/64。
+        /// ⚠ 宿主仓 ffmpegPictureUI 的同一对常数写在 `GainMapEncoder`（`KOffsetSdrN/D`、`KOffsetHdrN/D`），
+        ///   那边是**产品权威**；本库是抽取副本，改这里必须同步那边（2026-10-22 跨仓同进程对撞实测：
+        ///   本库停留在 F-5 之前 ⇒ 与宿主在暗底图格子上最大差 133/255 码）。
+        /// </summary>
+        public const float KOffsetSdr = 1f / 64f;
+        public const float KOffsetHdr = 1f / 64f;
+
+        /// <summary>
+        /// 灰度增益图计算：输入 HDR/SDR RGBA 交错，输出每像素 1 byte。
+        /// F-5（2026-10-11 回灌，2026-10-22 入库）：4 参重载 = 用**元数据声明的 offset** 施加前向公式
+        /// ⇒ 「声明 == 使用」落在这一行；需要自定义 offset 的调用点走 6 参重载。
+        /// ⚠ 旧实现（本库 2026-10-12 之前）用的是 `eps = 0.001f` 分母地板：底图极暗处
+        ///   （sLum≈0）被算成 `hLum/0.001` ⇒ 比值虚高 ⇒ 增益**顶到 255**；而按声明的 1/64 偏移，
+        ///   同一格只有 ≈140。差值落在 HDR 重建最敏感的高光端 ⇒ 必须与宿主同形。
         /// ⚠️ 实测 AVX2 版 (gather log2) 慢 1.9×，故纯标量。
         /// </summary>
         public static void ComputeGainMapGray(Span<float> hdr, Span<float> sdr, Span<byte> gain, float maxLog2Gain)
+            => ComputeGainMapGray(hdr, sdr, gain, maxLog2Gain, KOffsetHdr, KOffsetSdr);
+
+        /// <summary>
+        /// 前向 log2 增益的**唯一定义式**（F-5）：L = log2((hdr + offsetHdr) / (sdr + offsetSdr))。
+        /// 与参照 libavif `src/gainmap.c` 的 `ratio = (alt + alternateOffset[c]) / (base + baseOffset[c])`
+        /// 同形，也与 libultrahdr `gainmapmath.cpp` 的 computeGain 同形。
+        /// ⚠ offset 必须由调用方按「元数据声明的那份数」传入 ⇒ 解侧 `ApplyGainMap` 恒按声明施加
+        ///   （`(s + offsetSdr)·2^L − offsetHdr`）；前向一旦不用声明值，编解码就不互逆。
+        /// ≥1 地板（boost ≥ 1，"底图 SDR ⇒ 只上映射"）同时保住 **byte 0 ⇔ boost 1 恒等**。
+        /// </summary>
+        public static float Log2Gain(float hdr, float sdr, float offsetHdr, float offsetSdr, bool floorAtOne = true)
         {
-            const float eps = 0.001f;
+            float den = sdr + offsetSdr;
+            if (den <= 0f) return 0f;                       // 底图侧负值（矩阵越界）⇒ 无上映射可言
+            float ratio = (hdr + offsetHdr) / den;
+            if (floorAtOne) return MathF.Log2(Math.Max(ratio, 1.0f));
+            // 允许衰减：比值非正时无 log2 可言 ⇒ 给一个会被量化端钳到 min 的下界哨兵，而不是伪造 0。
+            return ratio > 0f ? MathF.Log2(ratio) : -100f;
+        }
+
+        /// <summary>6 参重载：offset 与量程下沿显式给出（「声明 == 使用」在调用点可见）。</summary>
+        public static void ComputeGainMapGray(Span<float> hdr, Span<float> sdr, Span<byte> gain, float maxLog2Gain,
+            float offsetHdr, float offsetSdr, float minLog2Gain = 0f)
+        {
             for (int i = 0; i + 4 <= hdr.Length; i += 4)
             {
                 float hR = hdr[i], hG = hdr[i + 1], hB = hdr[i + 2];
                 float sR = sdr[i], sG = sdr[i + 1], sB = sdr[i + 2];
                 float hLum = 0.2126f * hR + 0.7152f * hG + 0.0722f * hB;
                 float sLum = 0.2126f * sR + 0.7152f * sG + 0.0722f * sB;
-                float logGain = MathF.Log2(Math.Max(hLum / Math.Max(sLum, eps), 1.0f));
-                gain[i / 4] = LogGainToByteScalar(logGain, maxLog2Gain);
+                float logGain = Log2Gain(hLum, sLum, offsetHdr, offsetSdr, floorAtOne: minLog2Gain >= 0f);
+                gain[i / 4] = LogGainToByteScalar(logGain, maxLog2Gain, minLog2Gain);
             }
         }
 
-        /// <summary>log2(gain) → 8-bit 标量参考</summary>
+        /// <summary>log2(gain) → 8-bit 标量参考（默认量程 [0, max]，与旧 2 参版逐字节相同）。</summary>
         public static byte LogGainToByteScalar(float logGain, float maxLog2Gain)
+            => LogGainToByteScalar(logGain, maxLog2Gain, 0f);
+
+        /// <summary>
+        /// log2(gain) → 8-bit，双侧仿射（min&lt;0 时启用；min=0 与 2 参版逐字节相同）。
+        /// </summary>
+        public static byte LogGainToByteScalar(float logGain, float maxLog2Gain, float minLog2Gain)
         {
-            if (maxLog2Gain <= 0f) maxLog2Gain = 1f;
-            float clamped = Math.Clamp(logGain, 0f, maxLog2Gain);
-            return (byte)(clamped / maxLog2Gain * 255f);
+            if (minLog2Gain == 0f && maxLog2Gain <= 0f) maxLog2Gain = 1f;   // 历史口径，逐字节保持
+            float span = maxLog2Gain - minLog2Gain;
+            if (span <= 0f) return 0;                                       // 区间宽度 0 ⇒ 无可承载增益
+            float clamped = Math.Clamp(logGain, minLog2Gain, maxLog2Gain);
+            return (byte)((clamped - minLog2Gain) / span * 255f);
         }
 
         // ═══════════════════════════════════════════════════

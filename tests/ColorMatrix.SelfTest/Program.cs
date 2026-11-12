@@ -305,5 +305,66 @@ foreach (var (nameF1, mk) in new (string, System.Action<TransformSpec>)[]
     Check(ColorSpaceRegistry.ExactTransferName("Adobe RGB") == "bt470m",
           "L-10 反控：Adobe RGB 仍属 γ2.2 一族，不许被 170M 的改动带跑");
 }
+Console.WriteLine("\n--- F-5 增益图前向公式（2026-10-22 回灌：声明的 offset 必须就是施加的 offset）---");
+{
+    float o = 1f / 64f;
+    const float maxL = 1.3f;
+    // 期望值走 **double 口径另算一遍**（System.Math.Log(x,2) 而非被测方的 MathF.Log2），
+    // 不复用被测函数 ⇒ 不是"拿被测 helper 当自己的判据"那种空断言。
+    static double ExpectByte(float h, float s, float off, float mx) =>
+        Math.Log(Math.Max((h + off) / (s + off), 1.0), 2.0) / mx * 255.0;
+    static byte Gray(float h, float s)
+    {
+        var hdr = new float[] { h, h, h, 1f };
+        var sdr = new float[] { s, s, s, 1f };
+        var g = new byte[1];
+        SimdPixelOps.ComputeGainMapGray(hdr, sdr, g, maxL);
+        return g[0];
+    }
+    double exp = ExpectByte(0.01f, 0f, o, maxL);
+    byte got = Gray(0.01f, 0f);
+    Check(Math.Abs(got - (byte)exp) <= 2 && got < 250,
+          $"F-5 暗底图格子 (h=0.01,s=0)：按声明 offset 应为 {(byte)exp}±2、实 {got}；"
+        + $"旧 eps=0.001 地板会把比值算成 log2(10)=3.32 ⇒ 顶到 255（本条即为其判别器）");
+    Check(Gray(0.3f, 0.3f) == 0, "F-5 恒等式：hdr==sdr ⇒ byte 0（byte 0 ⇔ boost 1，黑位/SDR 区不许被抬亮）");
+    Check(Gray(0.5f, -0.02f) == 0, "F-5 分母越界（sdr+offsetSdr ≤ 0）⇒ 记 0，不伪造对数");
+    bool mono = true; byte prev = 0;
+    for (float h = 0.005f; h <= 0.021f; h += 0.002f) { byte b = Gray(h, 0f); if (b < prev) { mono = false; } prev = b; }
+    Check(mono, "F-5 单调性：s 固定、h 递增 ⇒ 增益字节不下降");
+    var hdrA = new float[] { 0.9f, 0.4f, 0.2f, 1f, 0.05f, 0.7f, 0.3f, 1f };
+    var sdrA = new float[] { 0.1f, 0.02f, 0.5f, 1f, 0.0f, 0.0f, 0.0f, 1f };
+    var g4 = new byte[2]; var g6 = new byte[2];
+    SimdPixelOps.ComputeGainMapGray(hdrA, sdrA, g4, maxL);
+    SimdPixelOps.ComputeGainMapGray(hdrA, sdrA, g6, maxL, SimdPixelOps.KOffsetHdr, SimdPixelOps.KOffsetSdr);
+    Check(g4[0] == g6[0] && g4[1] == g6[1],
+          $"F-5 同源性：4 参重载必须等价于显式传声明 offset 的 6 参重载（实 {g4[0]},{g4[1]} vs {g6[0]},{g6[1]}）");
+    // ⚠ 上面这条只证明「4 参把 offset 转给了 6 参」（两侧同为 255 饱和也不影响它成立），
+    //   但**证明不了 offset 真的参与了计算**——旧 eps 式在那两个采样点同样给 255。
+    //   ⇒ 补一个**非饱和**采样 + 与旧口径的判别（2026-11-13）。
+    {
+        const float maxL4 = 4f;                     // 放大到 4 档，使 log2≈1.45 落在量程中部而非顶端
+        var hMid = new float[] { 0.3f, 0.3f, 0.3f, 1f };
+        var sMid = new float[] { 0.1f, 0.1f, 0.1f, 1f };
+        var gOff = new byte[1];
+        SimdPixelOps.ComputeGainMapGray(hMid, sMid, gOff, maxL4);
+        // 旧口径（eps=0.001 分母地板、无 offset）按 double 独立重算，不复用被测函数
+        double logEps = Math.Log(Math.Max(0.3 / Math.Max(0.1, 0.001), 1.0), 2.0);
+        byte epsByte = (byte)(Math.Clamp(logEps, 0.0, maxL4) / maxL4 * 255.0);
+        double logOff = Math.Log((0.3 + o) / (0.1 + o), 2.0);
+        byte offByte = (byte)(Math.Clamp(logOff, 0.0, maxL4) / maxL4 * 255.0);
+        Check(gOff[0] == offByte && gOff[0] > 0 && gOff[0] < 255 && offByte != epsByte,
+              $"F-5 offset 接线判别（非饱和区 h=0.3,s=0.1,max={maxL4}）：按声明 offset 应 {(int)offByte}、实 {gOff[0]}；"
+            + $"旧 eps 口径给 {(int)epsByte} ⇒ 两者必须不同，否则本条对「offset 未参与计算」无牙");
+    }
+    double expNeg = Math.Log((0.02f + o) / (0.6f + o), 2.0);
+    var hN = new float[] { 0.02f, 0.02f, 0.02f, 1f };
+    var sN = new float[] { 0.6f, 0.6f, 0.6f, 1f };
+    var gN = new byte[1];
+    SimdPixelOps.ComputeGainMapGray(hN, sN, gN, maxL, o, o, minLog2Gain: (float)expNeg);
+    Check(gN[0] == 0 && expNeg < 0,
+          $"F-5 双侧仿射（minLog2Gain={expNeg:F3}<0 时）：h<s 的衰减格能量到量程下沿（实 {gN[0]}）");
+    Check(SimdPixelOps.Log2Gain(0.2f, -0.5f, o, o, floorAtOne: false) == 0f,
+          "F-5 允许衰减时，分母越界仍返回 0（哨兵 -100 只用于比值为负，不用于分母越界）");
+}
 Console.WriteLine($"===== ColorMatrix SelfTest: {pass} PASS / {fail} FAIL =====");
 return fail == 0 ? 0 : 1;
